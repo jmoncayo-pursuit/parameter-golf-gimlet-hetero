@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Model artifacts
+*.pt
+*.ptz
+*.bin
+
+# Logs
+logs/
+
+# Data (downloaded separately)
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp

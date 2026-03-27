@@ -1,0 +1,86 @@
+# parameter-golf-gimlet-hetero
+
+Heterogeneous-precision / heterogeneous-width decoder for the OpenAI Parameter Golf challenge.
+
+## Purpose
+
+This repo implements a single experiment: allocating different precision budgets and MLP widths to different transformer layer groups. The hypothesis is that middle layers benefit from wider MLPs at lower export precision, while early/late layers benefit from narrower MLPs at higher export precision. All training is in bf16/fp32; precision heterogeneity is applied only at post-training quantization export.
+
+This is a fresh repo starting from the official [openai/parameter-golf](https://github.com/openai/parameter-golf) baseline `train_gpt.py`. It is not a branch of any prior experimental codebase.
+
+## Layer Mapping
+
+11 transformer blocks (0-indexed), model_dim=512:
+
+| Layer Group | Block Indices | `mlp_mult` | MLP Hidden Dim | Export `clip_val` | Effective Precision |
+|:---|:---|:---|:---|:---|:---|
+| Early | 0, 1, 2 | 3.0 | 1536 | 31 | ~Int6 (63 levels) |
+| Middle | 3, 4, 5, 6, 7 | 4.5 | 2304 | 7 | ~Int4 (15 levels) |
+| Late | 8, 9, 10 | 3.0 | 1536 | 31 | ~Int6 (63 levels) |
+
+All attention projections (c_q, c_k, c_v, proj) use `clip_val=31` (Int6) across all layers.
+
+## Optimizer Partitioning
+
+| Parameter Group | Optimizer | LR (default) |
+|:---|:---|:---|
+| Middle MLP matrices (blocks 3-7, `mlp.fc.weight` / `mlp.proj.weight`) | Muon | `MATRIX_LR` (0.04) |
+| Early/late MLP matrices + all attention matrices | AdamW | `ADAMW_MATRIX_LR` (0.001) |
+| Token embedding | Adam | `TIED_EMBED_LR` (0.05) |
+| LM head (if untied) | Adam | `HEAD_LR` (0.008) |
+| Scalars, control tensors, skip weights | Adam | `SCALAR_LR` (0.04) |
+
+## Design Inspiration
+
+This repo adapts the principle of **heterogeneous resource allocation by workload sensitivity** from systems-level infrastructure design to transformer layer budgeting.
+
+**Primary inspiration:** "Efficient and Scalable Agentic AI with Heterogeneous Systems" ([arXiv:2507.19635v1](https://arxiv.org/html/2507.19635v1)). The paper demonstrates that heterogeneous compute infrastructure — mixing different hardware tiers for different pipeline stages — can match homogeneous high-end infrastructure at lower total cost. The core insight is that not all pipeline stages require the same hardware tier.
+
+**How this repo uses that insight:** Different transformer layer groups may be differentially sensitive to precision and width budgets. Rather than allocating the same precision and width uniformly, this repo assigns:
+- Higher precision / narrower width to early and late layers (boundary processing)
+- Lower precision / wider width to middle layers (bulk representation learning)
+
+## What Is Adapted vs. What Is Proven
+
+| Claim | Status |
+|:---|:---|
+| Gimlet paper demonstrates heterogeneous allocation is effective in systems infrastructure | Paper-supported |
+| Heterogeneous allocation principle may translate to model architecture | Adapted hypothesis |
+| The specific 3/5/3 early/middle/late precision-width map in this repo | Experimental, unvalidated |
+| Int4 middle + Int6 boundary improves val_bpb vs. uniform precision | Not yet measured |
+| Muon on middle MLP only improves training dynamics | Not yet measured |
+
+## Risks / Unknowns
+
+- **Artifact size**: With 11 layers and wider middle MLPs (4.5x), the model has significantly more parameters than the 9-layer baseline. Whether the Int4 middle layers compress enough for the artifact to fit under 16MB is unverified.
+- **Int4 precision at PTQ**: Quantizing middle MLP weights to 15 discrete levels (clip_val=7) with post-training quantization may cause unacceptable accuracy loss without in-training QAT. This is the primary known risk.
+- **AdamW LR tuning**: The default `ADAMW_MATRIX_LR=0.001` for non-Muon matrix params has not been tuned. This LR is unlikely optimal.
+- **No QAT during training**: This v1 implements precision heterogeneity only at export. True QAT (fake quantization during training) may be required to make Int4 middle layers viable, but is deferred to a follow-up experiment.
+- **Optimizer interaction**: Muon on a subset of matrix params (middle MLP only) has not been tested in this configuration. The baseline uses Muon on all block matrix params.
+
+## Files
+
+| File | Description |
+|:---|:---|
+| `train_gpt.py` | Modified baseline with heterogeneous changes marked `[HETERO]` |
+| `launch_h100.sh` | 8xH100 launcher script |
+| `README.md` | This file |
+| `ARCHITECTURE.md` | Architecture status document |
+| `requirements.txt` | Python dependencies (same as baseline) |
+
+## Usage
+
+```bash
+# 1xH100 smoke test
+RUN_ID=hetero_smoke \
+DATA_PATH=./data/datasets/fineweb10B_sp1024 \
+TOKENIZER_PATH=./data/tokenizers/fineweb_1024_bpe.model \
+torchrun --standalone --nproc_per_node=1 train_gpt.py
+
+# 8xH100 full run
+bash launch_h100.sh
+```
+
+## Baseline Provenance
+
+Based on `openai/parameter-golf` `train_gpt.py` as of 2026-03-27. Only the changes marked with `[HETERO]` comments differ from the official baseline.
