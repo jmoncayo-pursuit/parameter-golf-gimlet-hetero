@@ -12,7 +12,7 @@ Layer mapping (11 layers, 0-indexed):
 
 Optimizer:
   Muon: middle MLP matrices only
-  AdamW: early/late MLP, all attention, embeddings, head, scalars
+  Adam: early/late MLP, all attention, embeddings, head, scalars
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ class Hyperparameters:
     beta2 = float(os.environ.get("BETA2", 0.95))
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
-    adamw_matrix_lr = float(os.environ.get("ADAMW_MATRIX_LR", 0.001))  # [HETERO] LR for AdamW matrix params
+    adam_matrix_lr = float(os.environ.get("ADAM_MATRIX_LR", 0.001))  # [HETERO] LR for Adam matrix params
 
 # -----------------------------
 # HETEROGENEOUS LAYER CONFIG
@@ -898,7 +898,7 @@ def main() -> None:
 
     # [HETERO] Optimizer split:
     # - Muon: middle MLP matrix params only
-    # - AdamW: early/late MLP matrices + all attention matrices
+    # - Adam: early/late MLP matrices + all attention matrices
     # - Adam: token embedding, lm_head, scalars/control tensors
     middle_mlp_params: list[nn.Parameter] = []
     adamw_matrix_params: list[nn.Parameter] = []
@@ -913,7 +913,7 @@ def main() -> None:
             if is_middle and "mlp" in name:
                 middle_mlp_params.append(p)
             else:
-                adamw_matrix_params.append(p)
+                adam_matrix_params.append(p)
 
     if base_model.skip_weights.numel() > 0:
         scalar_params.append(base_model.skip_weights)
@@ -932,9 +932,9 @@ def main() -> None:
     )
     for group in optimizer_muon.param_groups:
         group["base_lr"] = args.matrix_lr
-    # [HETERO] AdamW for early/late MLP + all attention matrices.
-    optimizer_adamw_matrix = torch.optim.Adam(
-        [{"params": adamw_matrix_params, "lr": args.adamw_matrix_lr, "base_lr": args.adamw_matrix_lr}],
+    # [HETERO] Adam for early/late MLP + all attention matrices.
+    optimizer_matrix = torch.optim.Adam(
+        [{"params": adam_matrix_params, "lr": args.adam_matrix_lr, "base_lr": args.adam_matrix_lr}],
         betas=(args.beta1, args.beta2),
         eps=args.adam_eps,
         fused=True,
@@ -945,7 +945,7 @@ def main() -> None:
         eps=args.adam_eps,
         fused=True,
     )
-    optimizers: list[torch.optim.Optimizer] = [optimizer_tok, optimizer_muon, optimizer_adamw_matrix, optimizer_scalar]
+    optimizers: list[torch.optim.Optimizer] = [optimizer_tok, optimizer_muon, optimizer_matrix, optimizer_scalar]
     if base_model.lm_head is not None:
         optimizer_head = torch.optim.Adam(
             [{"params": [base_model.lm_head.weight], "lr": args.head_lr, "base_lr": args.head_lr}],
@@ -967,12 +967,12 @@ def main() -> None:
         log0(f"block:{i} group:{group} mlp_mult:{mlp_m} export_clip_val:{clip_v}")
     log0(
         f"optimizer_groups: muon_params:{len(middle_mlp_params)} "
-        f"adamw_matrix_params:{len(adamw_matrix_params)} scalar_params:{len(scalar_params)}"
+        f"adam_matrix_params:{len(adam_matrix_params)} scalar_params:{len(scalar_params)}"
     )
     log0(
         f"tie_embeddings:{args.tie_embeddings} embed_lr:{token_lr} "
         f"head_lr:{args.head_lr if base_model.lm_head is not None else 0.0} "
-        f"muon_matrix_lr:{args.matrix_lr} adamw_matrix_lr:{args.adamw_matrix_lr} scalar_lr:{args.scalar_lr}"
+        f"muon_matrix_lr:{args.matrix_lr} adam_matrix_lr:{args.adam_matrix_lr} scalar_lr:{args.scalar_lr}"
     )
     log0(
         f"train_batch_tokens:{args.train_batch_tokens} train_seq_len:{args.train_seq_len} "
