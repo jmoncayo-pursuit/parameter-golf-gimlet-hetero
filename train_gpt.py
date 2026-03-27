@@ -901,7 +901,7 @@ def main() -> None:
     # - Adam: early/late MLP matrices + all attention matrices
     # - Adam: token embedding, lm_head, scalars/control tensors
     middle_mlp_params: list[nn.Parameter] = []
-    adamw_matrix_params: list[nn.Parameter] = []
+    adam_matrix_params: list[nn.Parameter] = []
     scalar_params: list[nn.Parameter] = []
 
     for i, block in enumerate(base_model.blocks):
