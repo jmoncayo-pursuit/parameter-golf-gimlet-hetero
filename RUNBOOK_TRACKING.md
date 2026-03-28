@@ -24,10 +24,8 @@ Shared **`progress.csv`** fields: `tag`, `status`, `last_step`, `total_steps`, `
 | [Gimlet hetero](https://github.com/jmoncayo-pursuit/parameter-golf-gimlet-hetero) | ✓ | 7/7 | ✓ | ✓ | ✓ | ✓ | 2.49 | ✓ |
 | ↳ [Noisy QAT Bayesian](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/noisy-qat-bayesian) (`parameter-golf-qat-int4`) | — | — | — | — | — | — | — | No — Colab first |
 | [QAT Int4, Int6 GPS, and MLP](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/qat-int4-int6-gps-mlp) | — | — | — | — | — | — | — | No — Colab first |
-| [TurboQuant (`research/turboquant-probe`) — staged checkpoint train](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/research/turboquant-probe) | — | — | — | — | — | — | — | No — Colab first |
+| [TurboQuant — staged checkpoint train](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/turboquant-experiment) | — | — | — | — | — | — | — | No — Colab first |
 | [TT adapter eval](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/bayesian-backoff-cache-tt-adapter) | — | — | — | — | — | — | — | No — need baseline ckpt |
-
-_TurboQuant row:_ Colab is [`colab_turboquant_mse_surrogate_quant_probe.ipynb`](https://github.com/jmoncayo-pursuit/parameter-golf/blob/main/colab_turboquant_mse_surrogate_quant_probe.ipynb) in [`parameter-golf`](https://github.com/jmoncayo-pursuit/parameter-golf) (legacy filename). It runs the same staged train + `progress.csv` job grid as Gimlet / noisy; earlier TurboQuant MSE-surrogate **probe** cells were dropped as a weak feasibility signal vs train-loss trends.
 
 _Add a one-line **Runpod run** note below the table when you have paid-run results._
 
