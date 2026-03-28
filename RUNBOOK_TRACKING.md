@@ -4,8 +4,6 @@ Shared **`progress.csv`** fields: `tag`, `status`, `last_step`, `total_steps`, `
 
 **Experiment** links = GitHub **repo / branch** the runbook targets. `.ipynb` files may live in [`parameter-golf`](https://github.com/jmoncayo-pursuit/parameter-golf) or **this repo** (Gimlet). Branches: [parameter-golf-qat-int4/branches](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/branches).
 
-**Local folders (mirror GitHub):** Keep **one** clone of [`parameter-golf-qat-int4`](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4) (e.g. `~/Desktop/parameter-golf-qat-int4`) and use **`git checkout` / worktrees** for the three lines that share that remote: **`qat-int4-int6-gps-mlp`**, **`turboquant-experiment`**, **`bayesian-backoff-cache-tt-adapter`**. Keep **two** separate repo folders for the standalone experiments: **this repo** ([`parameter-golf-gimlet-hetero`](https://github.com/jmoncayo-pursuit/parameter-golf-gimlet-hetero)) and [`parameter-golf-noisy-qat-bayesian`](https://github.com/jmoncayo-pursuit/parameter-golf-noisy-qat-bayesian) (architecture + runbooks + tests live there). Shared Colab drivers may still sit under a local [`parameter-golf`](https://github.com/openai/parameter-golf) tree; that is not a third “experiment home” in the same sense.
-
 **How to read the table**
 
 | Column | Meaning |
