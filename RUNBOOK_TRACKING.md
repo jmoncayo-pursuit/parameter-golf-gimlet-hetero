@@ -15,7 +15,7 @@ Shared **`progress.csv`** fields: `tag`, `status`, `last_step`, `total_steps`, `
 | **Ckpt stable** | Same checkpoint byte size on every OK run. *Gimlet: 120728183 B × 7.* |
 | **Summary strong** | Notebook aggregate “strong signal” (Gimlet cell 5 = `BASELINE_CHECKPOINT_SIGNAL_STRONG`). |
 | **Mini bpb** | Mini val bits/byte when run (**—** if skipped). |
-| **Runpod ready** | OK to spend Runpod credits after Colab? (**✓** = yes; otherwise short reason). Header in main table: **Runpod** / **Ready?** on two lines. |
+| **Runpod ready** | Table header stacks **Runpod** / **Ready?**. **✓** = OK to spend credits after Colab; else short reason (e.g. `No — Colab first`). |
 
 **Values:** **✓** = pass / yes · **—** = not run · Plain text = blocked (e.g. `No — Colab first`).
 
