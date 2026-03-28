@@ -38,9 +38,9 @@ This is a separate experiment lineage starting from the official OpenAI paramete
 
 ## Current Evidence
 
-- **No training runs have been executed.** There are no val_bpb measurements, artifact sizes, or runtime benchmarks for this architecture.
-- **No external results.** No friend-runs or preliminary numbers exist for this exact configuration.
-- **Import/syntax correctness is verifiable locally** but has not been verified on CUDA hardware.
+- **Colab feasibility runbook (`colab_gimlet_runbook.ipynb`).** Optional **checkpoint-only** staging on a small iteration grid: verifies the modified `train_gpt.py` runs on Colab GPU, writes checkpoints and `progress.csv`, and passes the runbook’s **trend / completion gates**. This does **not** validate heterogeneous PTQ quality, 16MB artifact size, or competitive val_bpb — only that the code path and short-run training dynamics look sane in that environment.
+- **No full H100 / leaderboard-equivalent runs** are implied by the runbook. Full `torchrun` jobs, artifact export checks, and baseline comparisons remain the real proof bar.
+- **Import/syntax correctness** is verifiable locally; CUDA behavior can be partially exercised via the runbook or a 1×GPU smoke test.
 
 ## Not Yet Proven
 
@@ -60,7 +60,7 @@ This is a separate experiment lineage starting from the official OpenAI paramete
 
 ## Next Concrete Step
 
-Run a 1xH100 smoke test with reduced iterations (e.g., `ITERATIONS=200 VAL_LOSS_EVERY=0`) to verify:
+Use the Colab runbook for a **cheap** first pass if credits are limited; then run a 1xH100 smoke test with reduced iterations (e.g., `ITERATIONS=200 VAL_LOSS_EVERY=0`) to verify:
 1. The model constructs and compiles correctly on CUDA.
 2. The optimizer groups are populated as expected (check log output).
 3. The export path produces a valid compressed artifact.

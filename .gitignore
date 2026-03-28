@@ -15,7 +15,13 @@ logs/
 # Data (downloaded separately)
 data/
 
+# Private Runbooks
+.colab_gimlet_runbook.private.md
+.colab_gimlet_runbook.private.ipynb
+
 # IDE
 .vscode/
 .idea/
 *.swp
+colab_gimlet_runbook.private.ipynb
+.colab_gimlet_runbook.private.ipynb
