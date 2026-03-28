@@ -11,7 +11,7 @@ Shared **`progress.csv`** fields: `tag`, `status`, `last_step`, `total_steps`, `
 | **Colab done** | Finished a Colab pass on the current notebook revision? (**✓** = yes) |
 | **Jobs pass** | Count of `progress.csv` rows with `status=OK` vs planned jobs (**7/7** = every slot succeeded). *Use the fraction here, not ✓.* |
 | **Stage A** | Stage A tags: steps match (`last_step` = `total_steps`), and seed-42 loss does not worsen 100→200→300. |
-| **Ckpt stable** | Same checkpoint byte size on every OK run. *Gimlet: 120728183 B × 7.* |
+| **Ckpt stable** | Same checkpoint byte size on every OK run. *Table: ✓ (**`ckpt_bytes` B × OK rows**) when recorded.* |
 | **Summary strong** | Notebook aggregate “strong signal” (Gimlet cell 5 = `BASELINE_CHECKPOINT_SIGNAL_STRONG`). |
 | **Mini bpb** | Mini val bits/byte when run (**—** if skipped). |
 | **Runpod** | **✓** = OK to spend credits after Colab; else short reason (e.g. `No — Colab first`). |
@@ -20,7 +20,7 @@ Shared **`progress.csv`** fields: `tag`, `status`, `last_step`, `total_steps`, `
 
 | Experiment | Colab done | Jobs pass | Stage A | Ckpt stable | Summary strong | Mini bpb | Runpod |
 |:---|:---:|:---:|:---:|:---:|:---:|:---:|:---|
-| [Gimlet hetero](https://github.com/jmoncayo-pursuit/parameter-golf-gimlet-hetero) | ✓ | 7/7 | ✓ | ✓ | ✓ | 2.49 | ✓ |
+| [Gimlet hetero](https://github.com/jmoncayo-pursuit/parameter-golf-gimlet-hetero) | ✓ | 7/7 | ✓ | ✓ (120728183 B × 7) | ✓ | 2.49 | ✓ |
 | [Noisy QAT Bayesian](https://github.com/jmoncayo-pursuit/parameter-golf-noisy-qat-bayesian) | ✓ | 7/7 | ✓ | ✓ (119446367 B × 7) | ✓ | 2.12 | ✓ |
 | [TurboQuant](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/turboquant-experiment) | — | — | — | — | — | — | No — Colab first |
 | [Bayesian backoff cache + TT adapter](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/bayesian-backoff-cache-tt-adapter) | — | — | — | — | — | — | No — need baseline ckpt |
