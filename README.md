@@ -61,11 +61,14 @@ This repo adapts the principle of **heterogeneous resource allocation** from sys
 | `README.md` | This file |
 | `ARCHITECTURE.md` | Architecture status document |
 | `colab_gimlet_runbook.ipynb` | Colab feasibility runbook (checkpoint-only staging; see below) |
+| `RUNBOOK_TRACKING.md` | Cross-experiment Colab / Runpod status (shared `progress.csv` columns) |
 | `requirements.txt` | Python dependencies (same as baseline) |
 
 ## Colab feasibility runbook
 
 [`colab_gimlet_runbook.ipynb`](colab_gimlet_runbook.ipynb) is a **bounded smoke path** on Google Colab: mount Drive (optional), clone this repo + `openai/parameter-golf` data scripts, run short **checkpoint-only** training sweeps, append rows to `progress.csv`, and apply simple gates (step completion, train-loss trend, optional mini val slice). It is **not** a substitute for full `torchrun` training, official val_bpb leaderboard numbers, or the 16MB artifact check on H100. It exists so you can show a **reproducible protocol** and catch obvious breakage before spending serious GPU credits. Commit the notebook **without cell outputs** so the repo stays protocol, not a frozen Colab session.
+
+**Status chart (all experiments, Colab vs Runpod):** [`RUNBOOK_TRACKING.md`](RUNBOOK_TRACKING.md).
 
 ## Usage
 
