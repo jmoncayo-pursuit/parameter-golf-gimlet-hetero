@@ -22,7 +22,7 @@ Shared **`progress.csv`** fields: `tag`, `status`, `last_step`, `total_steps`, `
 | Experiment | Colab done | Jobs pass | Stage A · steps | Stage A · loss | Ckpt stable | Summary strong | Mini bpb | Runpod<br>Ready? |
 |:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | [Gimlet hetero](https://github.com/jmoncayo-pursuit/parameter-golf-gimlet-hetero) | ✓ | 7/7 | ✓ | ✓ | ✓ | ✓ | 2.49 | ✓ |
-| ↳ [Noisy QAT Bayesian](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/noisy-qat-bayesian) (`parameter-golf-qat-int4`) | — | — | — | — | — | — | — | No — Colab first |
+| [Noisy QAT Bayesian](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/noisy-qat-bayesian) | — | — | — | — | — | — | — | No — Colab first |
 | [QAT Int4, Int6 GPS, and MLP](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/qat-int4-int6-gps-mlp) | — | — | — | — | — | — | — | No — Colab first |
 | [TurboQuant](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/turboquant-experiment) | — | — | — | — | — | — | — | No — Colab first |
 | [TT adapter eval](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/bayesian-backoff-cache-tt-adapter) | — | — | — | — | — | — | — | No — need baseline ckpt |
