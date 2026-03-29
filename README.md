@@ -1,4 +1,4 @@
-# parameter-golf-gimlet-hetero: Heterogeneous-precision / heterogeneous-width decoder.
+# Gimlet Heterogeneous Precision Width Decoder
 
 Based on the official OpenAI parameter-golf baseline train_gpt.py.
 Changes from baseline are marked with [HETERO] comments.
