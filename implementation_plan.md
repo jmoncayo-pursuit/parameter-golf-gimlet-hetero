@@ -1,9 +1,9 @@
-# Implementation Plan: parameter-golf-gimlet-hetero (Final State)
+# Implementation plan — Gimlet Heterogeneous Precision Width Decoder
 
-This document summarizes the final "as-built" state of the `parameter-golf-gimlet-hetero` repository. It serves as the canonical reference for the heterogeneous architecture and its training/export configuration.
+As-built reference for `parameter-golf-gimlet-hetero`: architecture, training, and export configuration.
 
-## 1. Repository Purpose
-The purpose of this repository is to implement a heterogeneous-precision and heterogeneous-width transformer decoder. It tests the hypothesis that allocating higher width to middle layers at the cost of lower export precision (Int4) can match or exceed the performance of a homogeneous baseline within a 16MB artifact constraint.
+## 1. Repository purpose
+Decoder with per-group MLP width and export precision (e.g. wider middle at Int4 export, boundaries at Int6). Hypothesis: that allocation can match or beat a uniform baseline within the 16MB artifact constraint.
 
 ## 2. Model Architecture: 11-Layer Heterogeneous Decoder
 The model uses 11 transformer blocks to support a symmetrical 3/5/3 split.

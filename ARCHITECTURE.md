@@ -1,8 +1,8 @@
-# Architecture Status: parameter-golf-gimlet-hetero
+# Architecture — Gimlet Heterogeneous Precision Width Decoder
 
 ## Purpose
 
-Experimental repo implementing a heterogeneous-precision / heterogeneous-width decoder for the Parameter Golf challenge. Tests whether allocating different MLP widths and export precision budgets to different layer groups (early/middle/late) improves val_bpb compared to a uniform allocation, within the 16MB artifact constraint.
+Parameter Golf experiment fork: vary MLP width and export precision by layer group (early / middle / late) and compare to a uniform baseline, within the 16MB artifact constraint.
 
 This is a separate experiment lineage starting from the official OpenAI parameter-golf baseline, not a branch of any prior experimental codebase.
 
