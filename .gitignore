@@ -19,7 +19,8 @@ data/
 .colab_gimlet_runbook.private.md
 .colab_gimlet_runbook.private.ipynb
 
-# IDE
+# IDE / OS
+.DS_Store
 .vscode/
 .idea/
 *.swp
