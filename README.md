@@ -32,7 +32,7 @@ All attention projections (c_q, c_k, c_v, proj) use `clip_val=31` (Int6) across 
 
 This repo adapts the principle of **heterogeneous resource allocation** from systems-level infrastructure design to transformer layer budgeting.
 
-**Primary inspiration:** "Efficient and Scalable Agentic AI with Heterogeneous Systems" ([arXiv:2507.19635v1](https://arxiv.org/html/2507.19635v1)). The paper discusses how heterogeneous compute infrastructure (mixing different hardware tiers) can optimize performance and cost for AI workloads. This repo takes that systems-level insight as inspiration for allocating different precision and width budgets across transformer layers.
+**Primary inspiration:** "Efficient and Scalable Agentic AI with Heterogeneous Systems" ([arXiv:2507.19635v1](https://arxiv.org/html/2507.19635v1)) by Zain Asgar (Stanford University, Gimlet Labs Inc.), Michelle Nguyen (Gimlet Labs, Inc.), and Sachin Katti (Stanford University, Intel). The paper discusses how heterogeneous compute infrastructure (mixing different hardware tiers) can optimize performance and cost for AI workloads. This repo takes that systems-level insight as inspiration for allocating different precision and width budgets across transformer layers, and adopts the name "Gimlet" as a nod to the lab the paper was published out of.
 
 ## What Is Adapted vs. What Is Proven
 
