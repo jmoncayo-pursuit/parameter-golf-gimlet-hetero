@@ -56,6 +56,19 @@ elif not torch.cuda.is_available():
     import torch._dynamo
     torch._dynamo.config.disable = True
 
+# [HETERO-FIX] T4 Compatibility: Detect T4 and disable compile/BF16 if needed
+IS_T4 = False
+if torch.cuda.is_available():
+    device_name = torch.cuda.get_device_name(0)
+    if "Tesla T4" in device_name:
+        IS_T4 = True
+        # T4 doesn't support bfloat16 compilation and is too slow for torch.compile in Colab
+        import torch._dynamo
+        torch._dynamo.config.disable = True
+        # Suppress warnings
+        import warnings
+        warnings.filterwarnings("ignore", message="Tesla T4 does not support bfloat16 compilation natively")
+
 # -----------------------------
 # HYPERPARAMETERS
 # -----------------------------
@@ -841,10 +854,17 @@ def main() -> None:
     torch.backends.cudnn.allow_tf32 = True
     from torch.backends.cuda import enable_cudnn_sdp, enable_flash_sdp, enable_math_sdp, enable_mem_efficient_sdp
 
-    enable_cudnn_sdp(False)
-    enable_flash_sdp(True)
-    enable_mem_efficient_sdp(False)
-    enable_math_sdp(False)
+    # [HETERO-FIX] T4 Backend Selection
+    if IS_T4:
+        enable_cudnn_sdp(False)
+        enable_flash_sdp(False)
+        enable_mem_efficient_sdp(False)
+        enable_math_sdp(True) # Force math on T4 to avoid 'Invalid backend'
+    else:
+        enable_cudnn_sdp(False)
+        enable_flash_sdp(True)
+        enable_mem_efficient_sdp(False)
+        enable_math_sdp(False)
 
     logfile = None
     if master_process:
@@ -928,8 +948,18 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
-    model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
+    
+    # [HETERO-FIX] Conditional Compile for T4
+    if IS_T4 or os.environ.get("NO_COMPILE") == "1":
+        log0("Disabling torch.compile (T4 detected or NO_COMPILE=1)")
+        compiled_model = base_model
+    else:
+        compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
+        
+    if distributed:
+        model = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False)
+    else:
+        model = compiled_model
 
     # [HETERO] Build per-tensor clip_val map for heterogeneous PTQ export.
     clip_val_map: dict[str, int] = {}
@@ -1087,10 +1117,11 @@ def main() -> None:
 
     step = 0
     step = 0
-    if os.environ.get("EVAL_ONLY") == "1":
-        log0("EVAL_ONLY=1: Skipping training loop and proceeding to serialization/validation.")
-        # Ensure final_model.pt exists if we skip straight to loading it
-        if not os.path.exists("final_model.pt"):
+    if os.environ.get("EVAL_ONLY") == "1" or os.environ.get("CHECKPOINT_ONLY") == "1":
+        reason = "EVAL_ONLY=1" if os.environ.get("EVAL_ONLY") == "1" else "CHECKPOINT_ONLY=1"
+        log0(f"{reason}: Skipping training loop and proceeding to serialization/validation.")
+        # Ensure final_model.pt exists if we skip straight to loading it in true EVAL mode
+        if os.environ.get("EVAL_ONLY") == "1" and not os.path.exists("final_model.pt"):
             log0("WARNING: final_model.pt not found. Evaluation may fail unless a checkpoint is provided.")
     else:
         while True:
