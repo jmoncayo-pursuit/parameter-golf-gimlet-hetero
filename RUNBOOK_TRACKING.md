@@ -14,17 +14,18 @@ Shared **`progress.csv`** fields: `tag`, `status`, `last_step`, `total_steps`, `
 | **Ckpt stable** | Same checkpoint byte size on every OK run. *Table: ✓ (**`ckpt_bytes` B × OK rows**) when recorded.* |
 | **Summary strong** | Notebook aggregate “strong signal” (Gimlet cell 5 = `BASELINE_CHECKPOINT_SIGNAL_STRONG`). |
 | **Mini bpb** | Mini val bits/byte when run (**—** if skipped). |
+| **Feasibility** | **✓** = passes all technical gates (Jobs, Stage A, Ckpt, Summary). (**—** if not run). |
 | **Runpod** | **✓** = OK to spend credits after Colab; else short reason (e.g. `No — Colab first`). |
 
 **Values:** **✓** = pass / yes · **—** = not run · Plain text = blocked (e.g. `No — Colab first`).
 
-| Experiment | Colab done | Jobs pass | Stage A | Ckpt stable | Summary strong | Mini bpb | Runpod |
-|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---|
-| [Gimlet hetero](https://github.com/jmoncayo-pursuit/parameter-golf-gimlet-hetero) | ✓ | 7/7 | ✓ | ✓ (120728183 B × 7) | ✓ | 2.49 | ✓ |
-| [Noisy QAT Bayesian](https://github.com/jmoncayo-pursuit/parameter-golf-noisy-qat-bayesian) | ✓ | 7/7 | ✓ | ✓ (119446367 B × 7) | ✓ | 2.12 | ✓ |
-| [TurboQuant](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/turboquant-experiment) | ✓ | 7/7 | ✓ | ✓ (119446367 B × 7) | ✓ | 2.12 | ✓ |
-| [Bayesian backoff cache + TT adapter](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/bayesian-backoff-cache-tt-adapter) | — | — | — | — | — | — | No — need baseline ckpt |
-| [QAT Int4, Int6 GPS, and MLP](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/qat-int4-int6-gps-mlp) | ✓ | 1/3 | No — `s42_i100`/`s42_i200` → `FAIL_TRAIN`; only `s42_i300` → OK | — (1 OK row; 119446367 B) | No | 2.11 | No — rerun Stage A to 3/3 OK + trend before spend |
+| Experiment | Colab done | Jobs pass | Stage A | Ckpt stable | Summary strong | Mini bpb | Feasibility | Runpod |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---|
+| [Gimlet hetero](https://github.com/jmoncayo-pursuit/parameter-golf-gimlet-hetero) | ✓ | 7/7 | ✓ | ✓ (120728183 B × 7) | ✓ | 2.49 | ✓ | ✓ |
+| [Noisy QAT Bayesian](https://github.com/jmoncayo-pursuit/parameter-golf-noisy-qat-bayesian) | ✓ | 7/7 | ✓ | ✓ (119446367 B × 7) | ✓ | 2.12 | ✓ | ✓ |
+| [TurboQuant](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/turboquant-experiment) | ✓ | 7/7 | ✓ | ✓ (119446367 B × 7) | ✓ | 2.12 | ✓ | ✓ |
+| [Bayesian backoff cache + TT adapter](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/bayesian-backoff-cache-tt-adapter) | — | — | — | — | — | — | — | No — need baseline ckpt |
+| [QAT Int4, Int6 GPS, and MLP](https://github.com/jmoncayo-pursuit/parameter-golf-qat-int4/tree/qat-int4-int6-gps-mlp) | ✓ | 1/3 | No — `s42_i100`/`s42_i200` → `FAIL_TRAIN`; only `s42_i300` → OK | — (1 OK row; 119446367 B) | No | 2.11 | No | No — rerun Stage A to 3/3 OK + trend before spend |
 
 _Add a one-line **Runpod run** note below the table when you have paid-run results._
 
