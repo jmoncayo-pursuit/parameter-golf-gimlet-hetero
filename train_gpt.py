@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 import glob
 import io
+import json
 import math
 import os
 import random
@@ -90,6 +91,7 @@ class Hyperparameters:
     # Validation cadence and batch size. Validation always uses the full fineweb_val split.
     val_batch_size = int(os.environ.get("VAL_BATCH_SIZE", 524_288))
     val_loss_every = int(os.environ.get("VAL_LOSS_EVERY", 1000))
+    val_max_tokens = int(os.environ.get("VAL_MAX_TOKENS", 0))
     train_log_every = int(os.environ.get("TRAIN_LOG_EVERY", 200))
 
     # Training length.
@@ -98,7 +100,9 @@ class Hyperparameters:
     warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
     train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
-    max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
+    # Default to no wallclock cap so requested ITERATIONS complete unless the caller
+    # explicitly opts into time-boxed behavior.
+    max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 0.0))
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
 
     # Model shape.
@@ -920,12 +924,17 @@ def main() -> None:
         dataset_dir = Path(args.data_path).resolve()
         actual_train_files = len(list(dataset_dir.glob("fineweb_train_*.bin")))
         val_tokens = load_validation_tokens(args.val_files, args.train_seq_len)
+        if args.val_max_tokens > 0:
+            capped_tokens = min(val_tokens.numel(), args.val_max_tokens + 1)
+            val_tokens = val_tokens[:capped_tokens]
         base_bytes_lut, has_leading_space_lut, is_boundary_token_lut = build_sentencepiece_luts(
             sp, args.vocab_size, device
         )
     log0(f"val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path={args.tokenizer_path}")
     log0(f"train_loader:dataset:{dataset_dir.name if 'dataset_dir' in locals() else 'mock'} train_shards:{actual_train_files if 'actual_train_files' in locals() else 0}")
     log0(f"val_loader:shards pattern={args.val_files} tokens:{(val_tokens.numel() - 1) if 'val_tokens' in locals() else 0}")
+    if args.val_max_tokens > 0:
+        log0(f"val_loader:max_tokens_cap:{args.val_max_tokens}")
 
     # -----------------------------
     # MODEL + OPTIMIZER SETUP
@@ -1052,6 +1061,10 @@ def main() -> None:
         f"train_batch_tokens:{args.train_batch_tokens} train_seq_len:{args.train_seq_len} "
         f"iterations:{args.iterations} warmup_steps:{args.warmup_steps} "
         f"max_wallclock_seconds:{args.max_wallclock_seconds:.3f}"
+    )
+    log0(
+        "wallclock_mode:"
+        + ("disabled (exact step target)" if args.max_wallclock_seconds <= 0 else "enabled (may stop early)")
     )
     log0(f"seed:{args.seed}")
 
@@ -1209,8 +1222,9 @@ def main() -> None:
                 stop_after_step = step
 
     log0(
-        f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
-        f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
+        f"phase:training_complete steps:{step}/{args.iterations} "
+        f"peak_memory_allocated:{torch.cuda.max_memory_allocated() // 1024 // 1024}MiB "
+        f"peak_memory_reserved:{torch.cuda.max_memory_reserved() // 1024 // 1024}MiB"
     )
 
     # -----------------------------
@@ -1219,6 +1233,7 @@ def main() -> None:
     # Save the raw state (useful for debugging/loading in PyTorch directly), then always produce
     # the compressed int8+zlib artifact and validate the round-tripped weights.
 
+    log0("phase:serialization_start writing final_model.pt")
     if master_process:
         torch.save(base_model.state_dict(), "final_model.pt")
         model_bytes = os.path.getsize("final_model.pt")
@@ -1227,26 +1242,31 @@ def main() -> None:
         log0(f"Code size: {code_bytes} bytes")
         log0(f"Total submission size: {model_bytes + code_bytes} bytes")
 
+    log0("phase:quantization_start building int8+zlib artifact")
     quant_obj, quant_stats = quantize_state_dict_int8(base_model.state_dict(), clip_val_map=clip_val_map)  # [HETERO]
     quant_buf = io.BytesIO()
     torch.save(quant_obj, quant_buf)
     quant_raw = quant_buf.getvalue()
     quant_blob = zlib.compress(quant_raw, level=9)
     quant_raw_bytes = len(quant_raw)
+    quant_file_bytes = 0
+    total_submission_bytes = 0
     if master_process:
         with open("final_model.int8.ptz", "wb") as f:
             f.write(quant_blob)
         quant_file_bytes = os.path.getsize("final_model.int8.ptz")
         code_bytes = len(code.encode("utf-8"))
         ratio = quant_stats["baseline_tensor_bytes"] / max(quant_stats["int8_payload_bytes"], 1)
+        total_submission_bytes = quant_file_bytes + code_bytes
         log0(
             f"Serialized model int8+zlib: {quant_file_bytes} bytes "
             f"(payload:{quant_stats['int8_payload_bytes']} raw_torch:{quant_raw_bytes} payload_ratio:{ratio:.2f}x)"
         )
-        log0(f"Total submission size int8+zlib: {quant_file_bytes + code_bytes} bytes")
+        log0(f"Total submission size int8+zlib: {total_submission_bytes} bytes")
 
     if distributed:
         dist.barrier()
+    log0("phase:roundtrip_eval_start loading quantized artifact and running final validation")
     with open("final_model.int8.ptz", "rb") as f:
         quant_blob_disk = f.read()
     quant_state = torch.load(io.BytesIO(zlib.decompress(quant_blob_disk)), map_location="cpu")
@@ -1271,6 +1291,53 @@ def main() -> None:
         f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
     )
     log0(f"final_int8_zlib_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+    if master_process:
+        summary = {
+            "run_id": args.run_id,
+            "seed": args.seed,
+            "iterations_target": args.iterations,
+            "iterations_completed": step,
+            "stopped_early": step < args.iterations,
+            "max_wallclock_seconds": args.max_wallclock_seconds,
+            "world_size": world_size,
+            "grad_accum_steps": grad_accum_steps,
+            "train_batch_tokens": args.train_batch_tokens,
+            "train_seq_len": args.train_seq_len,
+            "train_time_ms": training_time_ms,
+            "final_model_pt_bytes": model_bytes if 'model_bytes' in locals() else 0,
+            "final_model_int8_ptz_bytes": quant_file_bytes,
+            "train_gpt_py_bytes": len(code.encode("utf-8")),
+            "total_submission_bytes": total_submission_bytes,
+            "submission_limit_bytes": 16_000_000,
+            "submission_limit_ok": total_submission_bytes <= 16_000_000,
+            "int8_payload_bytes": quant_stats["int8_payload_bytes"],
+            "int8_raw_torch_bytes": quant_raw_bytes,
+            "baseline_tensor_bytes": quant_stats["baseline_tensor_bytes"],
+            "payload_ratio": ratio if 'ratio' in locals() else 0.0,
+            "roundtrip_val_loss": float(q_val_loss),
+            "roundtrip_val_bpb": float(q_val_bpb),
+        }
+        Path("final_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        Path("final_summary.md").write_text(
+            "\n".join(
+                [
+                    f"# Run Summary: {args.run_id}",
+                    "",
+                    f"- Steps: {step}/{args.iterations}",
+                    f"- Stopped early: {'yes' if step < args.iterations else 'no'}",
+                    f"- Total submission size: {total_submission_bytes} bytes",
+                    f"- Limit check: {'PASS' if total_submission_bytes <= 16_000_000 else 'FAIL'}",
+                    f"- `final_model.int8.ptz`: {quant_file_bytes} bytes",
+                    f"- `train_gpt.py`: {len(code.encode('utf-8'))} bytes",
+                    f"- Roundtrip val_loss: {float(q_val_loss):.8f}",
+                    f"- Roundtrip val_bpb: {float(q_val_bpb):.8f}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        log0("Wrote final_summary.json and final_summary.md")
+    log0("phase:done")
 
     if distributed:
         dist.destroy_process_group()

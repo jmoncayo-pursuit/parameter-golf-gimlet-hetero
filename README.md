@@ -58,6 +58,7 @@ This repo adapts the principle of **heterogeneous resource allocation** from sys
 |:---|:---|
 | `train_gpt.py` | Modified baseline with heterogeneous changes marked `[HETERO]` |
 | `launch_h100.sh` | 8xH100 launcher script |
+| `preflight_h100.sh` | Fast fail checks for paths, Python syntax, GPU count, and exact-step settings |
 | `README.md` | This file |
 | `ARCHITECTURE.md` | Architecture status document |
 | `colab_gimlet_runbook.ipynb` | Colab feasibility runbook (checkpoint-only staging; see below) |
@@ -75,13 +76,33 @@ This repo adapts the principle of **heterogeneous resource allocation** from sys
 ```bash
 # 1xH100 smoke test
 RUN_ID=hetero_smoke \
+NPROC_PER_NODE=1 \
+ITERATIONS=200 \
+VAL_LOSS_EVERY=0 \
 DATA_PATH=./data/datasets/fineweb10B_sp1024 \
 TOKENIZER_PATH=./data/tokenizers/fineweb_1024_bpe.model \
+MAX_WALLCLOCK_SECONDS=0 \
+bash ./preflight_h100.sh && \
 torchrun --standalone --nproc_per_node=1 train_gpt.py
 
 # 8xH100 full run
 bash launch_h100.sh
 ```
+
+Set `MAX_WALLCLOCK_SECONDS=0` when you want an exact-step run. If you set a positive cap, training may stop before `ITERATIONS` is reached.
+
+Cheap preflight only:
+
+```bash
+NPROC_PER_NODE=8 bash ./preflight_h100.sh
+```
+
+What to look for in the smoke log before spending on 8xH100:
+- `wallclock_mode:disabled (exact step target)`
+- `world_size:1 grad_accum_steps:8`
+- `optimizer_groups: ...`
+- `Serialized model int8+zlib: ...`
+- `final_int8_zlib_roundtrip_exact ...`
 
 ## Baseline Provenance
 
