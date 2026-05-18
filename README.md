@@ -32,7 +32,7 @@ All attention projections (c_q, c_k, c_v, proj) use `clip_val=31` (Int6) across 
 
 This repo adapts the principle of **heterogeneous resource allocation** from systems-level infrastructure design to transformer layer budgeting.
 
-**Primary inspiration:** "Efficient and Scalable Agentic AI with Heterogeneous Systems" ([arXiv:2507.19635v1](https://arxiv.org/html/2507.19635v1)). The paper discusses how heterogeneous compute infrastructure (mixing different hardware tiers) can optimize performance and cost for AI workloads. This repo takes that systems-level insight as inspiration for allocating different precision and width budgets across transformer layers.
+**Primary inspiration:** "Efficient and Scalable Agentic AI with Heterogeneous Systems" ([arXiv:2507.19635v1](https://arxiv.org/html/2507.19635v1)) by Zain Asgar (Stanford University, Gimlet Labs Inc.), Michelle Nguyen (Gimlet Labs, Inc.), and Sachin Katti (Stanford University, Intel). The paper discusses how heterogeneous compute infrastructure (mixing different hardware tiers) can optimize performance and cost for AI workloads. This repo takes that systems-level insight as inspiration for allocating different precision and width budgets across transformer layers, and adopts the name "Gimlet" as a nod to the lab the paper was published out of.
 
 ## What Is Adapted vs. What Is Proven
 
@@ -58,30 +58,74 @@ This repo adapts the principle of **heterogeneous resource allocation** from sys
 |:---|:---|
 | `train_gpt.py` | Modified baseline with heterogeneous changes marked `[HETERO]` |
 | `launch_h100.sh` | 8xH100 launcher script |
+| `preflight_h100.sh` | Fast fail checks for paths, Python syntax, GPU count, and exact-step settings |
 | `README.md` | This file |
 | `ARCHITECTURE.md` | Architecture status document |
-| `colab_gimlet_runbook.ipynb` | Colab feasibility runbook (checkpoint-only staging; see below) |
-| `RUNBOOK_TRACKING.md` | Cross-experiment Colab / Runpod status (shared `progress.csv` columns) |
+| `RUNPOD_READINESS_STANDARD.md` | Operational standard this repo now serves as for other experiments |
+| `EXPERIMENT_READINESS_TRACKER.md` | Inventory of experiment canonical homes and readiness status |
+| `colab_gimlet_runbook.ipynb` | Clean Colab proof runbook |
+| `kaggle_gimlet_runbook.ipynb` | Clean Kaggle proof runbook |
+| `records/` | Saved proof notebooks and result summaries that belong to this repo |
 | `requirements.txt` | Python dependencies (same as baseline) |
 
-## Colab feasibility runbook
+## Proof runbooks
 
-[`colab_gimlet_runbook.ipynb`](colab_gimlet_runbook.ipynb) is a **bounded smoke path** on Google Colab: mount Drive (optional), clone this repo + `openai/parameter-golf` data scripts, run short **checkpoint-only** training sweeps, append rows to `progress.csv`, and apply simple gates (step completion, train-loss trend, optional mini val slice). It is **not** a substitute for full `torchrun` training, official val_bpb leaderboard numbers, or the 16MB artifact check on H100. It exists so you can show a **reproducible protocol** and catch obvious breakage before spending serious GPU credits. Commit the notebook **without cell outputs** so the repo stays protocol, not a frozen Colab session.
+[`colab_gimlet_runbook.ipynb`](colab_gimlet_runbook.ipynb) and [`kaggle_gimlet_runbook.ipynb`](kaggle_gimlet_runbook.ipynb) are the clean proof paths for this repo.
 
-**Status chart (all experiments, Colab vs Runpod):** [`RUNBOOK_TRACKING.md`](RUNBOOK_TRACKING.md).
+They exist to prove that this experiment can:
+
+- complete exact-step proof runs
+- export `final_model.int8.ptz`
+- write final summaries
+- finish the roundtrip validation path
+
+They are operational proof artifacts, not leaderboard evidence.
+
+Completed proof results that actually belong to this repo are saved under:
+
+- [`records/colab_600_step_run/README.md`](/Users/jmoncayopursuit.org/Desktop/parameter-golf-gimlet-hetero/records/colab_600_step_run/README.md)
+- [`records/kaggle_600_step_run/README.md`](/Users/jmoncayopursuit.org/Desktop/parameter-golf-gimlet-hetero/records/kaggle_600_step_run/README.md)
 
 ## Usage
 
 ```bash
 # 1xH100 smoke test
 RUN_ID=hetero_smoke \
+NPROC_PER_NODE=1 \
+ITERATIONS=200 \
+VAL_LOSS_EVERY=0 \
 DATA_PATH=./data/datasets/fineweb10B_sp1024 \
 TOKENIZER_PATH=./data/tokenizers/fineweb_1024_bpe.model \
+MAX_WALLCLOCK_SECONDS=0 \
+bash ./preflight_h100.sh && \
 torchrun --standalone --nproc_per_node=1 train_gpt.py
 
 # 8xH100 full run
 bash launch_h100.sh
 ```
+
+Set `MAX_WALLCLOCK_SECONDS=0` when you want an exact-step run. If you set a positive cap, training may stop before `ITERATIONS` is reached.
+
+Cheap preflight only:
+
+```bash
+NPROC_PER_NODE=8 bash ./preflight_h100.sh
+```
+
+What to look for in the smoke log before spending on 8xH100:
+- `wallclock_mode:disabled (exact step target)`
+- `world_size:1 grad_accum_steps:8`
+- `optimizer_groups: ...`
+- `Serialized model int8+zlib: ...`
+- `final_int8_zlib_roundtrip_exact ...`
+
+## Notes on scope
+
+This repo should only advertise evidence that is actually stored here.
+
+- Cross-experiment tracking lives elsewhere conceptually and should not be treated as Gimlet evidence.
+- Result notebooks for other experiments belong in their own repos.
+- Old one-off or misleading proof artifacts should not be treated as current evidence for this experiment.
 
 ## Baseline Provenance
 

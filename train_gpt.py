@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 import glob
 import io
+import json
 import math
 import os
 import random
@@ -37,6 +38,37 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn.parallel import DistributedDataParallel as DDP
+
+# -----------------------------
+# GPU COMPATIBILITY [T4-FIX]
+# -----------------------------
+# Tesla T4 and older do not support native bfloat16 or max_autotune_gemm.
+# We suppress Inductor warnings and disable compile if native BF16 is missing.
+if torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+    import torch._dynamo
+    import torch._inductor.config
+    torch._dynamo.config.suppress_errors = True
+    torch._inductor.config.disable = True
+    # Also suppress the specific gemm autotune warning
+    import logging
+    logging.getLogger("torch._inductor.utils").setLevel(logging.ERROR)
+elif not torch.cuda.is_available():
+    # Also disable compile on CPU
+    import torch._dynamo
+    torch._dynamo.config.disable = True
+
+# [HETERO-FIX] T4 Compatibility: Detect T4 and disable compile/BF16 if needed
+IS_T4 = False
+if torch.cuda.is_available():
+    device_name = torch.cuda.get_device_name(0)
+    if "Tesla T4" in device_name:
+        IS_T4 = True
+        # T4 doesn't support bfloat16 compilation and is too slow for torch.compile in Colab
+        import torch._dynamo
+        torch._dynamo.config.disable = True
+        # Suppress warnings
+        import warnings
+        warnings.filterwarnings("ignore", message="Tesla T4 does not support bfloat16 compilation natively")
 
 # -----------------------------
 # HYPERPARAMETERS
@@ -59,6 +91,7 @@ class Hyperparameters:
     # Validation cadence and batch size. Validation always uses the full fineweb_val split.
     val_batch_size = int(os.environ.get("VAL_BATCH_SIZE", 524_288))
     val_loss_every = int(os.environ.get("VAL_LOSS_EVERY", 1000))
+    val_max_tokens = int(os.environ.get("VAL_MAX_TOKENS", 0))
     train_log_every = int(os.environ.get("TRAIN_LOG_EVERY", 200))
 
     # Training length.
@@ -67,7 +100,9 @@ class Hyperparameters:
     warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
     train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
-    max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
+    # Default to no wallclock cap so requested ITERATIONS complete unless the caller
+    # explicitly opts into time-boxed behavior.
+    max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 0.0))
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
 
     # Model shape.
@@ -276,12 +311,12 @@ def eval_val(
     total_seqs = (val_tokens.numel() - 1) // args.train_seq_len
     seq_start = (total_seqs * rank) // world_size
     seq_end = (total_seqs * (rank + 1)) // world_size
-    val_loss_sum = torch.zeros((), device=device, dtype=torch.float64)
-    val_token_count = torch.zeros((), device=device, dtype=torch.float64)
-    val_byte_count = torch.zeros((), device=device, dtype=torch.float64)
+    val_loss_sum = torch.zeros((), device=device, dtype=torch.float32)
+    val_token_count = torch.zeros((), device=device, dtype=torch.float32)
+    val_byte_count = torch.zeros((), device=device, dtype=torch.float32)
 
     model.eval()
-    with torch.inference_mode():
+    with torch.no_grad():
         for batch_seq_start in range(seq_start, seq_end, local_batch_seqs):
             batch_seq_end = min(batch_seq_start + local_batch_seqs, seq_end)
             raw_start = batch_seq_start * args.train_seq_len
@@ -289,16 +324,16 @@ def eval_val(
             local = val_tokens[raw_start:raw_end].to(device=device, dtype=torch.int64, non_blocking=True)
             x = local[:-1].reshape(-1, args.train_seq_len)
             y = local[1:].reshape(-1, args.train_seq_len)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+            with torch.autocast(device_type=device.type if device.type != 'cpu' else 'cpu', dtype=torch.bfloat16, enabled=device.type != 'cpu'):
                 batch_loss = model(x, y).detach()
             batch_token_count = float(y.numel())
-            val_loss_sum += batch_loss.to(torch.float64) * batch_token_count
+            val_loss_sum += batch_loss.to(torch.float32) * batch_token_count
             val_token_count += batch_token_count
             prev_ids = x.reshape(-1)
             tgt_ids = y.reshape(-1)
             token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
             token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
-            val_byte_count += token_bytes.to(torch.float64).sum()
+            val_byte_count += token_bytes.to(torch.float32).sum()
 
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
@@ -525,9 +560,14 @@ class DistributedTokenLoader:
         self.rank = rank
         self.world_size = world_size
         self.device = device
-        self.stream = TokenStream(pattern)
+        self.stream = TokenStream(pattern) if os.environ.get("DRY_RUN") != "1" else None
 
     def next_batch(self, global_tokens: int, seq_len: int, grad_accum_steps: int) -> tuple[Tensor, Tensor]:
+        if os.environ.get("DRY_RUN") == "1":
+            batch_seqs = global_tokens // (self.world_size * grad_accum_steps * seq_len)
+            x = torch.randint(0, 1024, (batch_seqs, seq_len), device=self.device)
+            y = torch.randint(0, 1024, (batch_seqs, seq_len), device=self.device)
+            return x, y
         local_tokens = global_tokens // (self.world_size * grad_accum_steps)
         per_rank_span = local_tokens + 1
         chunk = self.stream.take(per_rank_span * self.world_size)
@@ -799,10 +839,15 @@ def main() -> None:
         raise ValueError(f"WORLD_SIZE={world_size} must divide 8 so grad_accum_steps stays integral")
     grad_accum_steps = 8 // world_size
     grad_scale = 1.0 / grad_accum_steps
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required")
-    device = torch.device("cuda", local_rank)
-    torch.cuda.set_device(device)
+    # [HETERO-FIX] Device Selection: Allow testing on CPU/MPS if CUDA is missing
+    if torch.cuda.is_available():
+        device = torch.device("cuda", local_rank)
+        torch.cuda.set_device(device)
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+        log0("Note: Running on CPU (testing only). Training will be extremely slow.")
     if distributed:
         dist.init_process_group(backend="nccl", device_id=device)
         dist.barrier()
@@ -813,10 +858,17 @@ def main() -> None:
     torch.backends.cudnn.allow_tf32 = True
     from torch.backends.cuda import enable_cudnn_sdp, enable_flash_sdp, enable_math_sdp, enable_mem_efficient_sdp
 
-    enable_cudnn_sdp(False)
-    enable_flash_sdp(True)
-    enable_mem_efficient_sdp(False)
-    enable_math_sdp(False)
+    # [HETERO-FIX] T4 Backend Selection
+    if IS_T4:
+        enable_cudnn_sdp(False)
+        enable_flash_sdp(False)
+        enable_mem_efficient_sdp(False)
+        enable_math_sdp(True) # Force math on T4 to avoid 'Invalid backend'
+    else:
+        enable_cudnn_sdp(False)
+        enable_flash_sdp(True)
+        enable_mem_efficient_sdp(False)
+        enable_math_sdp(False)
 
     logfile = None
     if master_process:
@@ -837,10 +889,11 @@ def main() -> None:
     log0("=" * 100, console=False)
     log0(f"Running Python {sys.version}", console=False)
     log0(f"Running PyTorch {torch.__version__}", console=False)
-    log0(
-        subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False).stdout,
-        console=False,
-    )
+    if os.system("command -v nvidia-smi >/dev/null 2>&1") == 0:
+        log0(
+            subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False).stdout,
+            console=False,
+        )
     log0("=" * 100, console=False)
 
     # -----------------------------
@@ -852,22 +905,36 @@ def main() -> None:
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
-    if not args.tokenizer_path.endswith(".model"):
-        raise ValueError(f"Script only setup for SentencePiece .model file: {args.tokenizer_path}")
-    sp = spm.SentencePieceProcessor(model_file=args.tokenizer_path)
-    if int(sp.vocab_size()) != args.vocab_size:
-        raise ValueError(
-            f"VOCAB_SIZE={args.vocab_size} does not match tokenizer vocab_size={int(sp.vocab_size())}"
+    if os.environ.get("DRY_RUN") == "1":
+        log0("DRY_RUN=1: Using random LUTS and empty val tokens.")
+        base_bytes_lut = torch.ones(args.vocab_size, dtype=torch.int16, device=device)
+        has_leading_space_lut = torch.zeros(args.vocab_size, dtype=torch.bool, device=device)
+        is_boundary_token_lut = torch.zeros(args.vocab_size, dtype=torch.bool, device=device)
+        val_tokens = torch.zeros(1025, dtype=torch.int64, device=device)
+        dataset_dir = Path(args.data_path)
+        actual_train_files = 0
+    else:
+        if not args.tokenizer_path.endswith(".model"):
+            raise ValueError(f"Script only setup for SentencePiece .model file: {args.tokenizer_path}")
+        sp = spm.SentencePieceProcessor(model_file=args.tokenizer_path)
+        if int(sp.vocab_size()) != args.vocab_size:
+            raise ValueError(
+                f"VOCAB_SIZE={args.vocab_size} does not match tokenizer vocab_size={int(sp.vocab_size())}"
+            )
+        dataset_dir = Path(args.data_path).resolve()
+        actual_train_files = len(list(dataset_dir.glob("fineweb_train_*.bin")))
+        val_tokens = load_validation_tokens(args.val_files, args.train_seq_len)
+        if args.val_max_tokens > 0:
+            capped_tokens = min(val_tokens.numel(), args.val_max_tokens + 1)
+            val_tokens = val_tokens[:capped_tokens]
+        base_bytes_lut, has_leading_space_lut, is_boundary_token_lut = build_sentencepiece_luts(
+            sp, args.vocab_size, device
         )
-    dataset_dir = Path(args.data_path).resolve()
-    actual_train_files = len(list(dataset_dir.glob("fineweb_train_*.bin")))
-    val_tokens = load_validation_tokens(args.val_files, args.train_seq_len)
-    base_bytes_lut, has_leading_space_lut, is_boundary_token_lut = build_sentencepiece_luts(
-        sp, args.vocab_size, device
-    )
     log0(f"val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path={args.tokenizer_path}")
-    log0(f"train_loader:dataset:{dataset_dir.name} train_shards:{actual_train_files}")
-    log0(f"val_loader:shards pattern={args.val_files} tokens:{val_tokens.numel() - 1}")
+    log0(f"train_loader:dataset:{dataset_dir.name if 'dataset_dir' in locals() else 'mock'} train_shards:{actual_train_files if 'actual_train_files' in locals() else 0}")
+    log0(f"val_loader:shards pattern={args.val_files} tokens:{(val_tokens.numel() - 1) if 'val_tokens' in locals() else 0}")
+    if args.val_max_tokens > 0:
+        log0(f"val_loader:max_tokens_cap:{args.val_max_tokens}")
 
     # -----------------------------
     # MODEL + OPTIMIZER SETUP
@@ -890,8 +957,18 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
-    model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
+    
+    # [HETERO-FIX] Conditional Compile for T4
+    if IS_T4 or os.environ.get("NO_COMPILE") == "1":
+        log0("Disabling torch.compile (T4 detected or NO_COMPILE=1)")
+        compiled_model = base_model
+    else:
+        compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
+        
+    if distributed:
+        model = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False)
+    else:
+        model = compiled_model
 
     # [HETERO] Build per-tensor clip_val map for heterogeneous PTQ export.
     clip_val_map: dict[str, int] = {}
@@ -985,6 +1062,10 @@ def main() -> None:
         f"iterations:{args.iterations} warmup_steps:{args.warmup_steps} "
         f"max_wallclock_seconds:{args.max_wallclock_seconds:.3f}"
     )
+    log0(
+        "wallclock_mode:"
+        + ("disabled (exact step target)" if args.max_wallclock_seconds <= 0 else "enabled (may stop early)")
+    )
     log0(f"seed:{args.seed}")
 
     # -----------------------------
@@ -1022,7 +1103,7 @@ def main() -> None:
                 if distributed:
                     model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
                 x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                with torch.autocast(device_type=device.type if device.type != 'cpu' else 'cpu', dtype=torch.bfloat16, enabled=device.type != 'cpu'):
                     warmup_loss = model(x, y)
                 (warmup_loss * grad_scale).backward()
             for opt in optimizers:
@@ -1044,97 +1125,106 @@ def main() -> None:
 
     training_time_ms = 0.0
     stop_after_step: int | None = None
-    torch.cuda.synchronize()
+    if device.type == "cuda": torch.cuda.synchronize()
     t0 = time.perf_counter()
 
     step = 0
-    while True:
-        last_step = step == args.iterations or (stop_after_step is not None and step >= stop_after_step)
+    step = 0
+    if os.environ.get("EVAL_ONLY") == "1" or os.environ.get("CHECKPOINT_ONLY") == "1":
+        reason = "EVAL_ONLY=1" if os.environ.get("EVAL_ONLY") == "1" else "CHECKPOINT_ONLY=1"
+        log0(f"{reason}: Skipping training loop and proceeding to serialization/validation.")
+        # Ensure final_model.pt exists if we skip straight to loading it in true EVAL mode
+        if os.environ.get("EVAL_ONLY") == "1" and not os.path.exists("final_model.pt"):
+            log0("WARNING: final_model.pt not found. Evaluation may fail unless a checkpoint is provided.")
+    else:
+        while True:
+            last_step = step == args.iterations or (stop_after_step is not None and step >= stop_after_step)
 
-        should_validate = last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0)
-        if should_validate:
-            torch.cuda.synchronize()
-            training_time_ms += 1000.0 * (time.perf_counter() - t0)
-            val_loss, val_bpb = eval_val(
-                args,
-                model,
-                rank,
-                world_size,
-                device,
-                grad_accum_steps,
-                val_tokens,
-                base_bytes_lut,
-                has_leading_space_lut,
-                is_boundary_token_lut,
-            )
-            log0(
-                f"step:{step}/{args.iterations} val_loss:{val_loss:.4f} val_bpb:{val_bpb:.4f} "
-                f"train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms"
-            )
-            torch.cuda.synchronize()
-            t0 = time.perf_counter()
-
-        if last_step:
-            if stop_after_step is not None and step < args.iterations:
-                log0(
-                    f"stopping_early: wallclock_cap train_time:{training_time_ms:.0f}ms "
-                    f"step:{step}/{args.iterations}"
+            should_validate = last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0)
+            if should_validate:
+                if device.type == "cuda": torch.cuda.synchronize()
+                training_time_ms += 1000.0 * (time.perf_counter() - t0)
+                val_loss, val_bpb = eval_val(
+                    args,
+                    model,
+                    rank,
+                    world_size,
+                    device,
+                    grad_accum_steps,
+                    val_tokens,
+                    base_bytes_lut,
+                    has_leading_space_lut,
+                    is_boundary_token_lut,
                 )
-            break
+                log0(
+                    f"step:{step}/{args.iterations} val_loss:{val_loss:.4f} val_bpb:{val_bpb:.4f} "
+                    f"train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms"
+                )
+                if device.type == "cuda": torch.cuda.synchronize()
+                t0 = time.perf_counter()
 
-        elapsed_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
-        scale = lr_mul(step, elapsed_ms)
-        zero_grad_all()
-        train_loss = torch.zeros((), device=device)
-        for micro_step in range(grad_accum_steps):
-            if distributed:
-                model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
-            x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                loss = model(x, y)
-            train_loss += loss.detach()
-            (loss * grad_scale).backward()
-        train_loss /= grad_accum_steps
+            if last_step:
+                if stop_after_step is not None and step < args.iterations:
+                    log0(
+                        f"stopping_early: wallclock_cap train_time:{training_time_ms:.0f}ms "
+                        f"step:{step}/{args.iterations}"
+                    )
+                break
 
-        frac = min(step / args.muon_momentum_warmup_steps, 1.0) if args.muon_momentum_warmup_steps > 0 else 1.0
-        muon_momentum = (1 - frac) * args.muon_momentum_warmup_start + frac * args.muon_momentum
-        for group in optimizer_muon.param_groups:
-            group["momentum"] = muon_momentum
+            elapsed_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
+            scale = lr_mul(step, elapsed_ms)
+            zero_grad_all()
+            train_loss = torch.zeros((), device=device)
+            for micro_step in range(grad_accum_steps):
+                if distributed:
+                    model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
+                x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+                with torch.autocast(device_type=device.type if device.type != 'cpu' else 'cpu', dtype=torch.bfloat16, enabled=device.type != 'cpu'):
+                    loss = model(x, y)
+                train_loss += loss.detach()
+                (loss * grad_scale).backward()
+            train_loss /= grad_accum_steps
 
-        for opt in optimizers:
-            for group in opt.param_groups:
-                group["lr"] = group["base_lr"] * scale
+            frac = min(step / args.muon_momentum_warmup_steps, 1.0) if args.muon_momentum_warmup_steps > 0 else 1.0
+            muon_momentum = (1 - frac) * args.muon_momentum_warmup_start + frac * args.muon_momentum
+            for group in optimizer_muon.param_groups:
+                group["momentum"] = muon_momentum
 
-        if args.grad_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
-        for opt in optimizers:
-            opt.step()
-        zero_grad_all()
+            for opt in optimizers:
+                for group in opt.param_groups:
+                    group["lr"] = group["base_lr"] * scale
 
-        step += 1
-        approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
-        should_log_train = (
-            args.train_log_every > 0
-            and (step <= 10 or step % args.train_log_every == 0 or stop_after_step is not None)
-        )
-        if should_log_train:
-            log0(
-                f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
-                f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
+            if args.grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
+            for opt in optimizers:
+                opt.step()
+            zero_grad_all()
+
+            step += 1
+            approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
+            should_log_train = (
+                args.train_log_every > 0
+                and (step <= 10 or step % args.train_log_every == 0 or stop_after_step is not None)
             )
+            if should_log_train:
+                log0(
+                    f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
+                    f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
+                )
 
-        # Needed to sync whether we've reached the wallclock cap.
-        reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
-        if distributed and max_wallclock_ms is not None:
-            reached_cap_tensor = torch.tensor(int(reached_cap), device=device)
-            dist.all_reduce(reached_cap_tensor, op=dist.ReduceOp.MAX)
-            reached_cap = bool(reached_cap_tensor.item())
-        if stop_after_step is None and reached_cap:
-            stop_after_step = step
+            # Needed to sync whether we've reached the wallclock cap.
+            reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
+            if distributed and max_wallclock_ms is not None:
+                reached_cap_tensor = torch.tensor(int(reached_cap), device=device)
+                dist.all_reduce(reached_cap_tensor, op=dist.ReduceOp.MAX)
+                reached_cap = bool(reached_cap_tensor.item())
+            if stop_after_step is None and reached_cap:
+                stop_after_step = step
 
     log0(
-        f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
-        f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
+        f"phase:training_complete steps:{step}/{args.iterations} "
+        f"peak_memory_allocated:{torch.cuda.max_memory_allocated() // 1024 // 1024}MiB "
+        f"peak_memory_reserved:{torch.cuda.max_memory_reserved() // 1024 // 1024}MiB"
     )
 
     # -----------------------------
@@ -1143,6 +1233,7 @@ def main() -> None:
     # Save the raw state (useful for debugging/loading in PyTorch directly), then always produce
     # the compressed int8+zlib artifact and validate the round-tripped weights.
 
+    log0("phase:serialization_start writing final_model.pt")
     if master_process:
         torch.save(base_model.state_dict(), "final_model.pt")
         model_bytes = os.path.getsize("final_model.pt")
@@ -1151,26 +1242,31 @@ def main() -> None:
         log0(f"Code size: {code_bytes} bytes")
         log0(f"Total submission size: {model_bytes + code_bytes} bytes")
 
+    log0("phase:quantization_start building int8+zlib artifact")
     quant_obj, quant_stats = quantize_state_dict_int8(base_model.state_dict(), clip_val_map=clip_val_map)  # [HETERO]
     quant_buf = io.BytesIO()
     torch.save(quant_obj, quant_buf)
     quant_raw = quant_buf.getvalue()
     quant_blob = zlib.compress(quant_raw, level=9)
     quant_raw_bytes = len(quant_raw)
+    quant_file_bytes = 0
+    total_submission_bytes = 0
     if master_process:
         with open("final_model.int8.ptz", "wb") as f:
             f.write(quant_blob)
         quant_file_bytes = os.path.getsize("final_model.int8.ptz")
         code_bytes = len(code.encode("utf-8"))
         ratio = quant_stats["baseline_tensor_bytes"] / max(quant_stats["int8_payload_bytes"], 1)
+        total_submission_bytes = quant_file_bytes + code_bytes
         log0(
             f"Serialized model int8+zlib: {quant_file_bytes} bytes "
             f"(payload:{quant_stats['int8_payload_bytes']} raw_torch:{quant_raw_bytes} payload_ratio:{ratio:.2f}x)"
         )
-        log0(f"Total submission size int8+zlib: {quant_file_bytes + code_bytes} bytes")
+        log0(f"Total submission size int8+zlib: {total_submission_bytes} bytes")
 
     if distributed:
         dist.barrier()
+    log0("phase:roundtrip_eval_start loading quantized artifact and running final validation")
     with open("final_model.int8.ptz", "rb") as f:
         quant_blob_disk = f.read()
     quant_state = torch.load(io.BytesIO(zlib.decompress(quant_blob_disk)), map_location="cpu")
@@ -1195,6 +1291,53 @@ def main() -> None:
         f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
     )
     log0(f"final_int8_zlib_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+    if master_process:
+        summary = {
+            "run_id": args.run_id,
+            "seed": args.seed,
+            "iterations_target": args.iterations,
+            "iterations_completed": step,
+            "stopped_early": step < args.iterations,
+            "max_wallclock_seconds": args.max_wallclock_seconds,
+            "world_size": world_size,
+            "grad_accum_steps": grad_accum_steps,
+            "train_batch_tokens": args.train_batch_tokens,
+            "train_seq_len": args.train_seq_len,
+            "train_time_ms": training_time_ms,
+            "final_model_pt_bytes": model_bytes if 'model_bytes' in locals() else 0,
+            "final_model_int8_ptz_bytes": quant_file_bytes,
+            "train_gpt_py_bytes": len(code.encode("utf-8")),
+            "total_submission_bytes": total_submission_bytes,
+            "submission_limit_bytes": 16_000_000,
+            "submission_limit_ok": total_submission_bytes <= 16_000_000,
+            "int8_payload_bytes": quant_stats["int8_payload_bytes"],
+            "int8_raw_torch_bytes": quant_raw_bytes,
+            "baseline_tensor_bytes": quant_stats["baseline_tensor_bytes"],
+            "payload_ratio": ratio if 'ratio' in locals() else 0.0,
+            "roundtrip_val_loss": float(q_val_loss),
+            "roundtrip_val_bpb": float(q_val_bpb),
+        }
+        Path("final_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        Path("final_summary.md").write_text(
+            "\n".join(
+                [
+                    f"# Run Summary: {args.run_id}",
+                    "",
+                    f"- Steps: {step}/{args.iterations}",
+                    f"- Stopped early: {'yes' if step < args.iterations else 'no'}",
+                    f"- Total submission size: {total_submission_bytes} bytes",
+                    f"- Limit check: {'PASS' if total_submission_bytes <= 16_000_000 else 'FAIL'}",
+                    f"- `final_model.int8.ptz`: {quant_file_bytes} bytes",
+                    f"- `train_gpt.py`: {len(code.encode('utf-8'))} bytes",
+                    f"- Roundtrip val_loss: {float(q_val_loss):.8f}",
+                    f"- Roundtrip val_bpb: {float(q_val_bpb):.8f}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        log0("Wrote final_summary.json and final_summary.md")
+    log0("phase:done")
 
     if distributed:
         dist.destroy_process_group()
