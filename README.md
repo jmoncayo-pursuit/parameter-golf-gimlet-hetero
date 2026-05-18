@@ -61,15 +61,30 @@ This repo adapts the principle of **heterogeneous resource allocation** from sys
 | `preflight_h100.sh` | Fast fail checks for paths, Python syntax, GPU count, and exact-step settings |
 | `README.md` | This file |
 | `ARCHITECTURE.md` | Architecture status document |
-| `colab_gimlet_runbook.ipynb` | Colab feasibility runbook (checkpoint-only staging; see below) |
-| `RUNBOOK_TRACKING.md` | Cross-experiment Colab / Runpod status (shared `progress.csv` columns) |
+| `RUNPOD_READINESS_STANDARD.md` | Operational standard this repo now serves as for other experiments |
+| `EXPERIMENT_READINESS_TRACKER.md` | Inventory of experiment canonical homes and readiness status |
+| `colab_gimlet_runbook.ipynb` | Clean Colab proof runbook |
+| `kaggle_gimlet_runbook.ipynb` | Clean Kaggle proof runbook |
+| `records/` | Saved proof notebooks and result summaries that belong to this repo |
 | `requirements.txt` | Python dependencies (same as baseline) |
 
-## Colab feasibility runbook
+## Proof runbooks
 
-[`colab_gimlet_runbook.ipynb`](colab_gimlet_runbook.ipynb) is a **bounded smoke path** on Google Colab: mount Drive (optional), clone this repo + `openai/parameter-golf` data scripts, run short **checkpoint-only** training sweeps, append rows to `progress.csv`, and apply simple gates (step completion, train-loss trend, optional mini val slice). It is **not** a substitute for full `torchrun` training, official val_bpb leaderboard numbers, or the 16MB artifact check on H100. It exists so you can show a **reproducible protocol** and catch obvious breakage before spending serious GPU credits. Commit the notebook **without cell outputs** so the repo stays protocol, not a frozen Colab session.
+[`colab_gimlet_runbook.ipynb`](colab_gimlet_runbook.ipynb) and [`kaggle_gimlet_runbook.ipynb`](kaggle_gimlet_runbook.ipynb) are the clean proof paths for this repo.
 
-**Status chart (all experiments, Colab vs Runpod):** [`RUNBOOK_TRACKING.md`](RUNBOOK_TRACKING.md).
+They exist to prove that this experiment can:
+
+- complete exact-step proof runs
+- export `final_model.int8.ptz`
+- write final summaries
+- finish the roundtrip validation path
+
+They are operational proof artifacts, not leaderboard evidence.
+
+Completed proof results that actually belong to this repo are saved under:
+
+- [`records/colab_600_step_run/README.md`](/Users/jmoncayopursuit.org/Desktop/parameter-golf-gimlet-hetero/records/colab_600_step_run/README.md)
+- [`records/kaggle_600_step_run/README.md`](/Users/jmoncayopursuit.org/Desktop/parameter-golf-gimlet-hetero/records/kaggle_600_step_run/README.md)
 
 ## Usage
 
@@ -103,6 +118,14 @@ What to look for in the smoke log before spending on 8xH100:
 - `optimizer_groups: ...`
 - `Serialized model int8+zlib: ...`
 - `final_int8_zlib_roundtrip_exact ...`
+
+## Notes on scope
+
+This repo should only advertise evidence that is actually stored here.
+
+- Cross-experiment tracking lives elsewhere conceptually and should not be treated as Gimlet evidence.
+- Result notebooks for other experiments belong in their own repos.
+- Old one-off or misleading proof artifacts should not be treated as current evidence for this experiment.
 
 ## Baseline Provenance
 
